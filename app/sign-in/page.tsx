@@ -22,14 +22,22 @@ function SignInForm() {
   const [errorMessage, setErrorMessage] = React.useState("")
 
   React.useEffect(() => {
+    const customMessage = searchParams.get("message")
+    if (customMessage) {
+      setErrorMessage(customMessage)
+      return
+    }
+
     if (errorParam === "oauth_failed") {
       setErrorMessage("Authentication failed. Please try again.")
     } else if (errorParam === "missing_verifier") {
       setErrorMessage("Secure authentication verification failed. Verifier token missing.")
     } else if (errorParam === "exchange_failed") {
       setErrorMessage("Failed to exchange OAuth token. Please try again.")
+    } else if (errorParam === "missing_token") {
+      setErrorMessage("OAuth session established successfully but no access token was returned by the server.")
     }
-  }, [errorParam])
+  }, [errorParam, searchParams])
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
