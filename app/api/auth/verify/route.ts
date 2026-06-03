@@ -11,10 +11,17 @@ export async function POST(request: Request) {
       otp: body.otp
     })
 
-    if (error || !data?.accessToken) {
+    if (error) {
       return NextResponse.json(
-        { error: error?.error ?? 'AUTH_VERIFICATION_FAILED', message: error?.message ?? 'Verification failed' },
-        { status: error?.statusCode ?? 400 }
+        { error: error.error ?? 'AUTH_VERIFICATION_FAILED', message: error.message ?? 'Verification failed' },
+        { status: error.statusCode ?? 400 }
+      )
+    }
+
+    if (!data?.accessToken) {
+      return NextResponse.json(
+        { error: 'MISSING_ACCESS_TOKEN', message: 'Verification succeeded but no access token was returned' },
+        { status: 400 }
       )
     }
 

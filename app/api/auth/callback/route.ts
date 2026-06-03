@@ -21,11 +21,13 @@ export async function GET(request: NextRequest) {
 
   const client = createServerClient()
   const { data, error } = await client.auth.exchangeOAuthCode(code, codeVerifier)
-  if (error || !data?.accessToken) {
-    if (error) {
-      console.error('OAuth code exchange failed', error)
-    }
-    return NextResponse.redirect(new URL('/sign-in?error=exchange_failed', request.url))
+  if (error) {
+    console.error('OAuth code exchange failed', error)
+    return NextResponse.redirect(new URL(`/sign-in?error=exchange_failed&message=${encodeURIComponent(error.message || '')}`, request.url))
+  }
+
+  if (!data?.accessToken) {
+    return NextResponse.redirect(new URL('/sign-in?error=missing_token', request.url))
   }
 
   const response = NextResponse.redirect(new URL('/dashboard', request.url))

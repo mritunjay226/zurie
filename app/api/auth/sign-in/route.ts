@@ -11,10 +11,17 @@ export async function POST(request: Request) {
       password: body.password
     })
 
-    if (error || !data?.accessToken) {
+    if (error) {
       return NextResponse.json(
-        { error: error?.error ?? 'AUTH_UNAUTHORIZED', message: error?.message ?? 'Sign in failed' },
-        { status: error?.statusCode ?? 401 }
+        { error: error.error ?? 'AUTH_UNAUTHORIZED', message: error.message ?? 'Sign in failed' },
+        { status: error.statusCode ?? 401 }
+      )
+    }
+
+    if (!data?.accessToken) {
+      return NextResponse.json(
+        { error: 'MISSING_ACCESS_TOKEN', message: 'Authentication succeeded but no access token was returned' },
+        { status: 401 }
       )
     }
 
