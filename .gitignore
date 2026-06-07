@@ -54,3 +54,10 @@ next-env.d.ts
 .roo
 .trae
 .windsurf
+
+# trigger.dev
+.trigger/
+
+# zip archives
+*.zip
+

@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@insforge/sdk/ssr'
+import { createInsForgeServerClient } from '@/app/lib/insforge/server'
 
 export async function POST(request: Request) {
   try {
-    const client = createServerClient()
+    const client = await createInsForgeServerClient()
     
     // Authenticate the user session to ensure they are logged in
     const { data: userData, error: userError } = await client.auth.getCurrentUser()

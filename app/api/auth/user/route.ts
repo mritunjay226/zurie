@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { createServerClient } from '@insforge/sdk/ssr'
+import { createInsForgeServerClient } from '@/app/lib/insforge/server'
 
 export async function GET() {
   try {
-    const client = createServerClient()
+    const client = await createInsForgeServerClient()
     const { data, error } = await client.auth.getCurrentUser()
 
     if (error || !data?.user) {
