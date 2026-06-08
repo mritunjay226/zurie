@@ -28,9 +28,10 @@ export default function DashboardLayout({
   // User Profile
   const [userEmail, setUserEmail] = React.useState("")
   const [userName, setUserName] = React.useState("")
+  const [credits, setCredits] = React.useState<number | null>(null)
 
   React.useEffect(() => {
-    async function fetchUser() {
+    async function fetchUserAndCredits() {
       try {
         const res = await fetch("/api/auth/user")
         if (!res.ok) {
@@ -43,8 +44,28 @@ export default function DashboardLayout({
       } catch (err) {
         router.push("/sign-in")
       }
+
+      try {
+        const res = await fetch("/api/user/credits")
+        const data = await res.json()
+        if (data.success) {
+          setCredits(data.credits)
+        }
+      } catch (err) {
+        console.error("Failed to fetch user credits:", err)
+      }
     }
-    fetchUser()
+    fetchUserAndCredits()
+
+    const handleCreditsUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent<number>
+      setCredits(customEvent.detail)
+    }
+
+    window.addEventListener("creditsUpdated", handleCreditsUpdate)
+    return () => {
+      window.removeEventListener("creditsUpdated", handleCreditsUpdate)
+    }
   }, [router])
 
   const handleSignOut = async () => {
@@ -212,7 +233,7 @@ export default function DashboardLayout({
             {/* Sleek Credit Count Pill */}
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900/60 border border-zinc-800 text-xs font-bold text-zinc-300">
               <Zap className="w-3.5 h-3.5 text-primary animate-pulse" />
-              <span>8,450 Credits</span>
+              <span>{credits !== null ? `${credits.toLocaleString()} Credits` : "Loading..."}</span>
             </div>
             <ThemeToggle />
           </div>

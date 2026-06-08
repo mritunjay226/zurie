@@ -18,19 +18,55 @@ async function imageUrlToFile(imageUrl: string, filename: string): Promise<File>
     const bytes = Buffer.from(arrayBuffer);
     return new File([bytes], filename, { type: mime });
   }
-async function uploadToPollinationsStorage(imageUrl: string, apiKey: string): Promise<string> {
-  const res = await fetch(imageUrl);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch source image: ${res.statusText}`);
+}
+
+function parseInsForgeStorageUrl(urlStr: string): { bucket: string; key: string } | null {
+  try {
+    const url = new URL(urlStr);
+    const pathname = url.pathname;
+    const regex = /\/api\/storage\/buckets\/([^/]+)\/objects\/(.+)$/;
+    const match = pathname.match(regex);
+    if (match) {
+      return {
+        bucket: decodeURIComponent(match[1]),
+        key: decodeURIComponent(match[2])
+      };
+    }
+  } catch (e) {
+    // ignore
   }
-  const arrayBuffer = await res.arrayBuffer();
-  const mime = res.headers.get("content-type") ?? "image/png";
-  const bytes = Buffer.from(arrayBuffer);
+  return null;
+}
+
+async function uploadToPollinationsStorage(imageUrl: string, apiKey: string, insforgeClient: any): Promise<string> {
+  let bytes: Buffer;
+  let mime: string = "image/png";
+
+  const parsed = parseInsForgeStorageUrl(imageUrl);
+  if (parsed) {
+    logger.info("Downloading reference image from InsForge storage via SDK", { bucket: parsed.bucket, key: parsed.key });
+    const { data: blob, error } = await insforgeClient.storage.from(parsed.bucket).download(parsed.key);
+    if (error || !blob) {
+      throw new Error(`Failed to download reference image from storage: ${error?.message || "Unknown error"}`);
+    }
+    const arrayBuffer = await blob.arrayBuffer();
+    bytes = Buffer.from(arrayBuffer);
+    mime = blob.type || "image/png";
+  } else {
+    logger.info("Fetching reference image from public URL", { url: imageUrl });
+    const res = await fetch(imageUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch source image: ${res.statusText}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    bytes = Buffer.from(arrayBuffer);
+    mime = res.headers.get("content-type") ?? "image/png";
+  }
   
   const formData = new FormData();
   const filename = imageUrl.split("/").pop()?.split("?")[0] ?? "image.png";
-  const blob = new Blob([bytes], { type: mime });
-  formData.append("file", blob, filename);
+  const blobData = new Blob([bytes], { type: mime });
+  formData.append("file", blobData, filename);
 
   const uploadRes = await fetch("https://media.pollinations.ai/upload", {
     method: "POST",
@@ -66,6 +102,7 @@ export const generateAvatarTask = task({
 
     const BASE_URL = process.env.NEXT_PUBLIC_INSFORGE_URL!;
     const API_KEY  = process.env.INSFORGE_API_KEY!;
+    const insforge = createAdminClient({ baseUrl: BASE_URL, apiKey: API_KEY });
 
     await metadata.set("progress", 10);
     await metadata.set("status", "Initializing...");
@@ -83,7 +120,7 @@ export const generateAvatarTask = task({
     if (payload.uploadedImgUrl) {
       await metadata.set("status", "Uploading reference to Pollinations...");
       try {
-        pollinationsImageUrl = await uploadToPollinationsStorage(payload.uploadedImgUrl, process.env.POLLINATIONS_API_KEY!);
+        pollinationsImageUrl = await uploadToPollinationsStorage(payload.uploadedImgUrl, process.env.POLLINATIONS_API_KEY!, insforge);
         logger.info("Uploaded reference image to Pollinations", { url: pollinationsImageUrl });
       } catch (err: any) {
         logger.error("Failed to upload reference image to Pollinations, falling back to original URL", { error: err.message });
@@ -98,7 +135,6 @@ export const generateAvatarTask = task({
       response_format: "b64_json"
     };
 
-    const insforge = createAdminClient({ baseUrl: BASE_URL, apiKey: API_KEY });
 
     // ── 2. Generate portrait 9:16 avatar ──────────────────────────────────────
     await metadata.set("progress", 50);
