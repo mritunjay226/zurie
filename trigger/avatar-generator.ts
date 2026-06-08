@@ -20,6 +20,74 @@ async function imageUrlToFile(imageUrl: string, filename: string): Promise<File>
   }
 }
 
+function parseInsForgeStorageUrl(urlStr: string): { bucket: string; key: string } | null {
+  try {
+    const url = new URL(urlStr);
+    const pathname = url.pathname;
+    const regex = /\/api\/storage\/buckets\/([^/]+)\/objects\/(.+)$/;
+    const match = pathname.match(regex);
+    if (match) {
+      return {
+        bucket: decodeURIComponent(match[1]),
+        key: decodeURIComponent(match[2])
+      };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+}
+
+async function uploadToPollinationsStorage(imageUrl: string, apiKey: string, insforgeClient: any): Promise<string> {
+  let bytes: Buffer;
+  let mime: string = "image/png";
+
+  const parsed = parseInsForgeStorageUrl(imageUrl);
+  if (parsed) {
+    logger.info("Downloading reference image from InsForge storage via SDK", { bucket: parsed.bucket, key: parsed.key });
+    const { data: blob, error } = await insforgeClient.storage.from(parsed.bucket).download(parsed.key);
+    if (error || !blob) {
+      throw new Error(`Failed to download reference image from storage: ${error?.message || "Unknown error"}`);
+    }
+    const arrayBuffer = await blob.arrayBuffer();
+    bytes = Buffer.from(arrayBuffer);
+    mime = blob.type || "image/png";
+  } else {
+    logger.info("Fetching reference image from public URL", { url: imageUrl });
+    const res = await fetch(imageUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch source image: ${res.statusText}`);
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    bytes = Buffer.from(arrayBuffer);
+    mime = res.headers.get("content-type") ?? "image/png";
+  }
+  
+  const formData = new FormData();
+  const filename = imageUrl.split("/").pop()?.split("?")[0] ?? "image.png";
+  const blobData = new Blob([bytes], { type: mime });
+  formData.append("file", blobData, filename);
+
+  const uploadRes = await fetch("https://media.pollinations.ai/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: formData
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(`Pollinations media upload failed: ${uploadRes.status} ${await uploadRes.text()}`);
+  }
+
+  const data = await uploadRes.json();
+  if (!data?.url) {
+    throw new Error(`No URL returned from Pollinations media upload: ${JSON.stringify(data)}`);
+  }
+
+  return data.url;
+}
+
 // ── Task ──────────────────────────────────────────────────────────────────────
 export const generateAvatarTask = task({
   id: "generate-avatar",
@@ -34,6 +102,7 @@ export const generateAvatarTask = task({
 
     const BASE_URL = process.env.NEXT_PUBLIC_INSFORGE_URL!;
     const API_KEY  = process.env.INSFORGE_API_KEY!;
+    const insforge = createAdminClient({ baseUrl: BASE_URL, apiKey: API_KEY });
 
     await metadata.set("progress", 10);
     await metadata.set("status", "Initializing...");
@@ -47,35 +116,25 @@ export const generateAvatarTask = task({
       ? `Using the provided reference image as the person's face and likeness, generate a high-quality avatar portrait. Style: ${styleName}. ${payload.prompt ?? ""}. Keep the person's facial features, apply the style. Tall portrait 9:16 profile picture format.`
       : `Generate a stunning avatar portrait. Style: ${styleName}. ${payload.prompt ?? "Professional character"}. Highly detailed, clean background. Tall portrait 9:16 profile picture format.`;
 
-    const requestBody: any = {
-      model: "sourceful/riverflow-v2.5-pro:free",
-      messages: [
-        {
-          role: "user",
-          content: payload.uploadedImgUrl ? [
-            {
-              type: "text",
-              text: promptText
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: payload.uploadedImgUrl
-              }
-            }
-          ] : promptText
-        }
-      ],
-      modalities: ["image"]
-    };
-
+    let pollinationsImageUrl = undefined;
     if (payload.uploadedImgUrl) {
-      requestBody.image_config = {
-        strength: 0.2
-      };
+      await metadata.set("status", "Uploading reference to Pollinations...");
+      try {
+        pollinationsImageUrl = await uploadToPollinationsStorage(payload.uploadedImgUrl, process.env.POLLINATIONS_API_KEY!, insforge);
+        logger.info("Uploaded reference image to Pollinations", { url: pollinationsImageUrl });
+      } catch (err: any) {
+        logger.error("Failed to upload reference image to Pollinations, falling back to original URL", { error: err.message });
+        pollinationsImageUrl = payload.uploadedImgUrl;
+      }
     }
 
-    const insforge = createAdminClient({ baseUrl: BASE_URL, apiKey: API_KEY });
+    const requestBody: any = {
+      model: "klein",
+      prompt: promptText,
+      image: pollinationsImageUrl,
+      response_format: "b64_json"
+    };
+
 
     // ── 2. Generate portrait 9:16 avatar ──────────────────────────────────────
     await metadata.set("progress", 50);
@@ -83,33 +142,28 @@ export const generateAvatarTask = task({
 
     let finalPortraitUrl = getUnsplashFallback(payload.style, "portrait");
     try {
-      logger.info("Calling OpenRouter Image Generation", {
+      logger.info("Calling Pollinations Image Generation", {
         model: requestBody.model,
         prompt: promptText,
         hasImages: !!payload.uploadedImgUrl
       });
 
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetch("https://gen.pollinations.ai/v1/images/generations", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "HTTP-Referer": "https://zurie.app",
-          "X-Title": "Zurie App"
+          "Authorization": `Bearer ${process.env.POLLINATIONS_API_KEY}`
         },
         body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
-        throw new Error(`OpenRouter error: ${response.status} ${await response.text()}`);
+        throw new Error(`Pollinations error: ${response.status} ${await response.text()}`);
       }
 
       const resData = await response.json();
-      const choice = resData.choices?.[0];
-      const imageObj = choice?.message?.images?.[0];
-      const dataUri = typeof imageObj === "string" 
-        ? imageObj 
-        : imageObj?.image_url?.url || imageObj?.url;
+      const b64 = resData.data?.[0]?.b64_json;
+      const dataUri = b64 ? `data:image/png;base64,${b64}` : null;
 
       if (dataUri) {
         const file = await imageUrlToFile(dataUri, `avatar_9_16_${Date.now()}.png`);
