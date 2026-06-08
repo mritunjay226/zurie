@@ -20,6 +20,40 @@ async function imageUrlToFile(imageUrl: string, filename: string): Promise<File>
   }
 }
 
+async function uploadToPollinationsStorage(imageUrl: string, apiKey: string): Promise<string> {
+  const res = await fetch(imageUrl);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch source image: ${res.statusText}`);
+  }
+  const arrayBuffer = await res.arrayBuffer();
+  const mime = res.headers.get("content-type") ?? "image/png";
+  const bytes = Buffer.from(arrayBuffer);
+  
+  const formData = new FormData();
+  const filename = imageUrl.split("/").pop()?.split("?")[0] ?? "image.png";
+  const blob = new Blob([bytes], { type: mime });
+  formData.append("file", blob, filename);
+
+  const uploadRes = await fetch("https://media.pollinations.ai/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`
+    },
+    body: formData
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(`Pollinations media upload failed: ${uploadRes.status} ${await uploadRes.text()}`);
+  }
+
+  const data = await uploadRes.json();
+  if (!data?.url) {
+    throw new Error(`No URL returned from Pollinations media upload: ${JSON.stringify(data)}`);
+  }
+
+  return data.url;
+}
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ runId: string }> }
@@ -53,7 +87,7 @@ export async function GET(
       } else if (elapsedSeconds < 8) {
         return NextResponse.json({ progress: 90, status: 'Finalizing 16:9 and 9:16 formats...' })
       } else {
-        // Mock generation completed - call OpenRouter directly
+        // Mock generation completed - call Pollinations.ai directly
         let image_url_16_9 = getUnsplashFallback(style)
         let image_url_9_16 = getUnsplashFallback(style, "portrait")
 
@@ -63,55 +97,39 @@ export async function GET(
             ? `Using the provided reference image as the person's face and likeness, generate a high-quality avatar portrait. Style: ${styleName}. ${promptText || ""}. Keep the person's facial features, apply the style. Tall portrait 9:16 profile picture format.`
             : `Generate a stunning avatar portrait. Style: ${styleName}. ${promptText || "Professional character"}. Highly detailed, clean background. Tall portrait 9:16 profile picture format.`;
 
-          const requestBody: any = {
-            model: "sourceful/riverflow-v2.5-pro:free",
-            messages: [
-              {
-                role: "user",
-                content: uploadedImgUrl ? [
-                  {
-                    type: "text",
-                    text: promptTextFormatted
-                  },
-                  {
-                    type: "image_url",
-                    image_url: {
-                      url: uploadedImgUrl
-                    }
-                  }
-                ] : promptTextFormatted
-              }
-            ],
-            modalities: ["image"]
-          };
-
+          let pollinationsImageUrl = undefined;
           if (uploadedImgUrl) {
-            requestBody.image_config = {
-              strength: 0.2
-            };
+            try {
+              pollinationsImageUrl = await uploadToPollinationsStorage(uploadedImgUrl, process.env.POLLINATIONS_API_KEY!);
+            } catch (uploadErr) {
+              console.error("Failed to upload reference image to Pollinations media storage", uploadErr);
+              pollinationsImageUrl = uploadedImgUrl;
+            }
           }
 
-          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          const requestBody: any = {
+            model: "klein",
+            prompt: promptTextFormatted,
+            image: pollinationsImageUrl,
+            response_format: "b64_json"
+          };
+
+          const response = await fetch("https://gen.pollinations.ai/v1/images/generations", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-              "HTTP-Referer": "https://zurie.app",
-              "X-Title": "Zurie App"
+              "Authorization": `Bearer ${process.env.POLLINATIONS_API_KEY}`
             },
             body: JSON.stringify(requestBody)
           });
 
           if (!response.ok) {
-            throw new Error(`OpenRouter error: ${response.status} ${await response.text()}`);
+            throw new Error(`Pollinations error: ${response.status} ${await response.text()}`);
           }
 
           const resData = await response.json();
-          const choice = resData.choices?.[0];
-          const imageObj = choice?.message?.images?.[0];
-          const dataUri = typeof imageObj === "string" 
-            ? imageObj 
-            : imageObj?.image_url?.url || imageObj?.url;
+          const b64 = resData.data?.[0]?.b64_json;
+          const dataUri = b64 ? `data:image/png;base64,${b64}` : null;
 
           if (dataUri) {
             try {
